@@ -54,7 +54,7 @@ class CVPBucketEventHandler(HandleBucketEvent):
                         dataQueue.put(line)
 
         if dataQueue.qsize() == 0:
-            logger.warning("Could not find any records to be validated in S3 file '%s'." % localFileName)
+            logger.warning("Could not find any records to be validated in S3 file '%s'." % filename)
             logger.warning("============================================================================")
 
         LoggerUtility.logInfo('Line count: ' + str(dataQueue.qsize()))
@@ -63,7 +63,7 @@ class CVPBucketEventHandler(HandleBucketEvent):
         
         return dataQueue
 
-    def _createMetadataObject(self, s3_head_object, key, bucket_name):
+    def _createMetadataObject(self, s3_head_object, key, bucket_name, path):
         metadata = {
             Constants.KEY_REFERENCE: key,
             Constants.CONTENT_LENGTH_REFERENCE: s3_head_object[Constants.CONTENT_LENGTH_REFERENCE],
@@ -74,25 +74,34 @@ class CVPBucketEventHandler(HandleBucketEvent):
             Constants.DATASET_REFERENCE: key.split('/')[0],
             Constants.ENVIRONMENT_NAME: os.environ["ENVIRONMENT_NAME"]
         }
-
-        if key.split('/')[0] == "cv":
-            data_provider_type_value = key.split('/')[1]
+        
+        keys = path.split('/')
+        length = len(keys)
+        
+        if length != 0:
+            data_provider_type_value = keys[length - 2]
             data_provider_type_metadata = {
                 Constants.DATA_PROVIDER_REFERENCE: data_provider_type_value
             }
             metadata.update(data_provider_type_metadata)
 
-            data_type_value = key.split('/')[2]
+            data_type_value = keys[length - 1]
             data_type_metadata = {
                 Constants.DATA_TYPE_REFERENCE: data_type_value
             }
             metadata.update(data_type_metadata)
-
-            message_count_value = self.recordQueue.qsize()
-            message_count_metadata = {
-                Constants.MESSAGE_COUNT: message_count_value
+        else:
+            data_provider_type_value = key
+            data_provider_type_metadata = {
+                Constants.DATA_PROVIDER_REFERENCE: data_provider_type_value
             }
-            metadata.update(message_count_metadata)
+            metadata.update(data_provider_type_metadata)
+            
+        message_count_value = self.recordQueue.qsize()
+        message_count_metadata = {
+            Constants.MESSAGE_COUNT: message_count_value
+        }
+        metadata.update(message_count_metadata)
 
         LoggerUtility.logInfo("METADATA: " + str(metadata))
         LoggerUtility.logInfo("S3 Head Object: " + str(s3_head_object))
@@ -217,6 +226,7 @@ class CVPBucketEventHandler(HandleBucketEvent):
             LoggerUtility.logError("Failed to publish custom cloudwatch metrics")
             raise e
 
+
     def handleBucketEvent(self, event, context):
         if VERBOSE_OUTPUT:
             Constants.LOGGER_LOG_LEVEL_ENV_VAR = "DEBUG"
@@ -226,9 +236,6 @@ class CVPBucketEventHandler(HandleBucketEvent):
         bucket_name, object_key = self._fetchS3DetailsFromEvent(event)
         s3_head_object = self._getS3HeadObject(bucket_name, object_key)
         self.recordQueue = self._getRecordsQueue(bucket_name, object_key)
-        metadata = self._createMetadataObject(s3_head_object, object_key, bucket_name)
-        LoggerUtility.logInfo("Provider " + metadata["DataProvider"])
-        LoggerUtility.logInfo("Type " + metadata["DataType"])
         
         s3res = boto3.resource('s3')
         bucket = s3res.Bucket(bucket_name)
@@ -248,6 +255,9 @@ class CVPBucketEventHandler(HandleBucketEvent):
                 ini_key = pathtoconfig + '/' + 'config.ini'
                 LoggerUtility.logInfo("Grabbing file: " + ini_key)
                 bucket.download_file(ini_key, '/tmp/config')
+                metadata = self._createMetadataObject(s3_head_object, object_key, bucket_name, pathtoconfig)
+                LoggerUtility.logInfo("Provider " + metadata["DataProvider"])
+                LoggerUtility.logInfo("Type " + metadata["DataType"])
                 validationData, num_valid_messages, num_error_messages = self._createValidationDataObject(s3_head_object, object_key, bucket_name, metadata["DataType"])
                 self._pushMetadataToElasticsearch(bucket_name, metadata)
                 self._publishCustomMetricsToCloudwatch(bucket_name, metadata, num_valid_messages, num_error_messages)
